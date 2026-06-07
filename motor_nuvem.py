@@ -7,44 +7,39 @@ from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, GiftEvent, LikeEvent, JoinEvent, ConnectEvent, DisconnectEvent
 
 salas_ativas = {}
+# 🧠 MEMÓRIA DO SERVIDOR: Evita ir à Rússia buscar a foto de quem já está na arena!
+cache_avatares_nuvem = {}
 
 
-# 📸 O EXTRATOR DE FOTOS HÍBRIDO (Nativo + API Russa TikWM)
 async def get_avatar(user):
-    # 1. Tenta o método nativo rápido
-    try:
-        urls = getattr(user.avatar_thumb, 'url_list', [])
-        if not urls:
-            urls = getattr(user.avatar_thumb, 'urls', [])
-        if urls and "dicebear" not in urls[0]:
-            return urls[0]
-    except Exception:
-        pass
-
-    # 2. Se falhar, usa a API TikWM (O truque do Mestre)
     nick = getattr(user, 'unique_id', str(user))
     if not nick: return ""
 
+    # Se já temos a foto guardada, devolve na hora sem travar o servidor!
+    if nick in cache_avatares_nuvem:
+        return cache_avatares_nuvem[nick]
+
+    # API RUSSA (TikWM) - A única que funciona na nuvem
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(f"https://www.tikwm.com/api/user/info?unique_id={nick}",
                                    headers={'User-Agent': 'Mozilla/5.0'},
-                                   timeout=5) as resp:
+                                   timeout=4) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     foto = data.get("data", {}).get("user", {}).get("avatarLarger", "")
                     if foto:
+                        cache_avatares_nuvem[nick] = foto  # Guarda na memória!
                         return foto
     except Exception:
         pass
 
-    return ""
+    return f"https://api.dicebear.com/7.x/bottts/svg?seed={nick}"
 
 
 async def broadcast_para_sala(tiktok_user, event_type, data):
     sala = salas_ativas.get(tiktok_user)
     if not sala or not sala["clientes_ws"]: return
-
     msg = json.dumps({"event": event_type, "data": data})
 
     clientes_para_remover = set()
@@ -107,20 +102,18 @@ async def iniciar_tiktok_client(tiktok_user):
     try:
         await client.start()
     except Exception as e:
-        print(f"⚠️ Erro ao conectar no TikTok de {tiktok_user}: {e}", flush=True)
+        print(f"⚠️ Erro ao conectar: {e}", flush=True)
 
 
 async def websocket_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-
     tiktok_user_atual = None
 
     try:
         async for msg in ws:
             if msg.type == web.WSMsgType.TEXT:
                 dados = json.loads(msg.data)
-
                 if dados.get("action") == "connect":
                     tiktok_user_atual = dados.get("tiktok_user", "").strip().replace("@", "")
                     if not tiktok_user_atual: continue
@@ -131,33 +124,28 @@ async def websocket_handler(request):
                         salas_ativas[tiktok_user_atual]["tiktok_task"] = task
 
                     salas_ativas[tiktok_user_atual]["clientes_ws"].add(ws)
-                    print(f"🌐 Novo jogador entrou na sala: {tiktok_user_atual}", flush=True)
+                    print(f"🌐 Novo jogador: {tiktok_user_atual}", flush=True)
 
-    except Exception as e:
+    except Exception:
         pass
     finally:
         if tiktok_user_atual and tiktok_user_atual in salas_ativas:
             salas_ativas[tiktok_user_atual]["clientes_ws"].discard(ws)
-
             if len(salas_ativas[tiktok_user_atual]["clientes_ws"]) == 0:
-                print(f"🧹 Sala {tiktok_user_atual} vazia. Desligando motor.", flush=True)
                 client = salas_ativas[tiktok_user_atual]["client"]
                 if client:
                     try:
                         asyncio.create_task(client.disconnect())
                     except:
                         pass
-
                 task = salas_ativas[tiktok_user_atual]["tiktok_task"]
                 if task: task.cancel()
-
                 del salas_ativas[tiktok_user_atual]
-
     return ws
 
 
 async def health_check(request):
-    return web.Response(text="Torre de Controle 100% Operacional!", status=200)
+    return web.Response(text="OK", status=200)
 
 
 app = web.Application()
@@ -166,5 +154,4 @@ app.router.add_route('*', '/{tail:.*}', health_check)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Torre de Controle Iniciada na porta {port}...", flush=True)
     web.run_app(app, host="0.0.0.0", port=port)
