@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import aiohttp
 from aiohttp import web
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, GiftEvent, LikeEvent, JoinEvent, ConnectEvent, DisconnectEvent
@@ -8,15 +9,36 @@ from TikTokLive.events import CommentEvent, GiftEvent, LikeEvent, JoinEvent, Con
 salas_ativas = {}
 
 
-# 🛡️ O NOVO EXTRATOR SEGURO DE FOTOS DE PERFIL
-def get_avatar(user):
+# 📸 O EXTRATOR DE FOTOS HÍBRIDO (Nativo + API Russa TikWM)
+async def get_avatar(user):
+    # 1. Tenta o método nativo rápido
     try:
         urls = getattr(user.avatar_thumb, 'url_list', [])
         if not urls:
             urls = getattr(user.avatar_thumb, 'urls', [])
-        return urls[0] if urls else ""
-    except:
-        return ""
+        if urls and "dicebear" not in urls[0]:
+            return urls[0]
+    except Exception:
+        pass
+
+    # 2. Se falhar, usa a API TikWM (O truque do Mestre)
+    nick = getattr(user, 'unique_id', str(user))
+    if not nick: return ""
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://www.tikwm.com/api/user/info?unique_id={nick}",
+                                   headers={'User-Agent': 'Mozilla/5.0'},
+                                   timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    foto = data.get("data", {}).get("user", {}).get("avatarLarger", "")
+                    if foto:
+                        return foto
+    except Exception:
+        pass
+
+    return ""
 
 
 async def broadcast_para_sala(tiktok_user, event_type, data):
@@ -50,33 +72,36 @@ async def iniciar_tiktok_client(tiktok_user):
 
     @client.on(CommentEvent)
     async def on_chat(e):
+        pic = await get_avatar(e.user)
         await broadcast_para_sala(tiktok_user, "chat", {
             "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "comment": e.comment,
-            "profilePictureUrl": get_avatar(e.user)
+            "profilePictureUrl": pic
         })
 
     @client.on(GiftEvent)
     async def on_gift(e):
+        pic = await get_avatar(e.user)
         g_name = getattr(e.gift, 'name', 'Gift')
         g_count = getattr(e.gift, 'count', getattr(e, 'repeat_count', 1))
         moedas = getattr(e.gift.info, 'diamond_count', 1) if hasattr(e.gift, 'info') else 1
         await broadcast_para_sala(tiktok_user, "gift", {
             "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "giftName": g_name,
-            "giftCount": g_count, "diamondCount": moedas, "profilePictureUrl": get_avatar(e.user)
+            "giftCount": g_count, "diamondCount": moedas, "profilePictureUrl": pic
         })
 
     @client.on(LikeEvent)
     async def on_like(e):
+        pic = await get_avatar(e.user)
         await broadcast_para_sala(tiktok_user, "like", {
             "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "likeCount": e.count,
-            "profilePictureUrl": get_avatar(e.user)
+            "profilePictureUrl": pic
         })
 
     @client.on(JoinEvent)
     async def on_join(e):
+        pic = await get_avatar(e.user)
         await broadcast_para_sala(tiktok_user, "join", {
-            "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''),
-            "profilePictureUrl": get_avatar(e.user)
+            "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "profilePictureUrl": pic
         })
 
     try:
