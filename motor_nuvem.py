@@ -1,8 +1,7 @@
 import asyncio
 import json
 import os
-import websockets
-import http
+from aiohttp import web
 from TikTokLive import TikTokLiveClient
 from TikTokLive.events import CommentEvent, GiftEvent, LikeEvent, JoinEvent, ConnectEvent, DisconnectEvent
 
@@ -19,8 +18,8 @@ async def broadcast_para_sala(tiktok_user, event_type, data):
     clientes_para_remover = set()
     for ws in sala["clientes_ws"]:
         try:
-            await ws.send(msg)
-        except websockets.exceptions.ConnectionClosed:
+            await ws.send_str(msg)
+        except Exception:
             clientes_para_remover.add(ws)
             
     # Limpa conexões mortas
@@ -76,61 +75,61 @@ async def iniciar_tiktok_client(tiktok_user):
     except Exception as e:
         print(f"⚠️ Erro ao conectar no TikTok de {tiktok_user}: {e}")
 
-async def handle_websocket(websocket):
+async def websocket_handler(request):
     """Gerencia a conexão do jogo (HTML) com o servidor na nuvem."""
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    
     tiktok_user_atual = None
 
     try:
-        async for message in websocket:
-            dados = json.loads(message)
-            
-            if dados.get("action") == "connect":
-                tiktok_user_atual = dados.get("tiktok_user", "").strip().replace("@", "")
-                if not tiktok_user_atual: continue
+        async for msg in ws:
+            if msg.type == web.WSMsgType.TEXT:
+                dados = json.loads(msg.data)
+                
+                if dados.get("action") == "connect":
+                    tiktok_user_atual = dados.get("tiktok_user", "").strip().replace("@", "")
+                    if not tiktok_user_atual: continue
 
-                if tiktok_user_atual not in salas_ativas:
-                    salas_ativas[tiktok_user_atual] = {"clientes_ws": set(), "tiktok_task": None, "client": None}
-                    task = asyncio.create_task(iniciar_tiktok_client(tiktok_user_atual))
-                    salas_ativas[tiktok_user_atual]["tiktok_task"] = task
+                    if tiktok_user_atual not in salas_ativas:
+                        salas_ativas[tiktok_user_atual] = {"clientes_ws": set(), "tiktok_task": None, "client": None}
+                        task = asyncio.create_task(iniciar_tiktok_client(tiktok_user_atual))
+                        salas_ativas[tiktok_user_atual]["tiktok_task"] = task
 
-                salas_ativas[tiktok_user_atual]["clientes_ws"].add(websocket)
-                print(f"🌐 Novo jogador entrou na sala: {tiktok_user_atual}")
+                    salas_ativas[tiktok_user_atual]["clientes_ws"].add(ws)
+                    print(f"🌐 Novo jogador entrou na sala: {tiktok_user_atual}")
 
-    except websockets.exceptions.ConnectionClosed:
+    except Exception as e:
         pass
     finally:
         if tiktok_user_atual and tiktok_user_atual in salas_ativas:
-            salas_ativas[tiktok_user_atual]["clientes_ws"].discard(websocket)
+            salas_ativas[tiktok_user_atual]["clientes_ws"].discard(ws)
             
             if len(salas_ativas[tiktok_user_atual]["clientes_ws"]) == 0:
                 print(f"🧹 Sala {tiktok_user_atual} vazia. Desligando motor do TikTok para poupar RAM.")
                 client = salas_ativas[tiktok_user_atual]["client"]
                 if client:
-                    try:
-                        asyncio.create_task(client.disconnect())
+                    try: asyncio.create_task(client.disconnect())
                     except: pass
                 
                 task = salas_ativas[tiktok_user_atual]["tiktok_task"]
                 if task: task.cancel()
                 
                 del salas_ativas[tiktok_user_atual]
+    
+    return ws
 
-async def process_request(connection, request):
-    """
-    🛡️ O ESCUDO DO RENDER:
-    Se o Render mandar um HTTP GET/HEAD para checar se o servidor está vivo, 
-    nós respondemos 'OK' e ele libera a nossa porta WebSocket para o mundo.
-    """
-    if "Upgrade" not in request.headers:
-        return connection.respond(http.HTTPStatus.OK, "Torre de Controle Ativa!\n")
-    return None # Deixa a conexão WebSocket passar normalmente
+async def health_check(request):
+    """Escudo: Responde sorrindo para o robô do Render!"""
+    return web.Response(text="Torre de Controle 100% Operacional!", status=200)
 
-async def main():
-    port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Torre de Controle Iniciada na porta {port}...")
-    # Ligamos o servidor com o escudo (process_request) ativado
-    async with websockets.serve(handle_websocket, "0.0.0.0", port, process_request=process_request):
-        await asyncio.Future()
+app = web.Application()
+# Tudo que vier na rota principal '/' vai para o WebSocket do Jogo
+app.router.add_get('/', websocket_handler)
+# Tudo que for verificação de saúde vai para o Escudo
+app.router.add_route('*', '/{tail:.*}', health_check)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 Torre de Controle AIOHTTP Iniciada na porta {port}...")
+    web.run_app(app, host="0.0.0.0", port=port)
