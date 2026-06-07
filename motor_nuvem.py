@@ -8,14 +8,23 @@ from TikTokLive.events import CommentEvent, GiftEvent, LikeEvent, JoinEvent, Con
 salas_ativas = {}
 
 
+# 🛡️ O NOVO EXTRATOR SEGURO DE FOTOS DE PERFIL
+def get_avatar(user):
+    try:
+        urls = getattr(user.avatar_thumb, 'url_list', [])
+        if not urls:
+            urls = getattr(user.avatar_thumb, 'urls', [])
+        return urls[0] if urls else ""
+    except:
+        return ""
+
+
 async def broadcast_para_sala(tiktok_user, event_type, data):
-    """Envia o evento apenas para os jogadores que estão conectados na sala desse TikToker."""
     sala = salas_ativas.get(tiktok_user)
     if not sala or not sala["clientes_ws"]: return
 
     msg = json.dumps({"event": event_type, "data": data})
 
-    # Envia para todos os navegadores abertos nesta sala
     clientes_para_remover = set()
     for ws in sala["clientes_ws"]:
         try:
@@ -23,66 +32,60 @@ async def broadcast_para_sala(tiktok_user, event_type, data):
         except Exception:
             clientes_para_remover.add(ws)
 
-    # Limpa conexões mortas
     for ws in clientes_para_remover:
         sala["clientes_ws"].discard(ws)
 
 
 async def iniciar_tiktok_client(tiktok_user):
-    """Inicia a escuta da live de um usuário específico."""
     client = TikTokLiveClient(unique_id=tiktok_user)
     salas_ativas[tiktok_user]["client"] = client
 
     @client.on(ConnectEvent)
     async def on_connect(event):
-        print(f"✅ Conectado na live de: {tiktok_user}")
+        print(f"✅ Conectado na live de: {tiktok_user}", flush=True)
 
     @client.on(DisconnectEvent)
     async def on_disconnect(event):
-        print(f"❌ Desconectado da live de: {tiktok_user}")
+        print(f"❌ Desconectado da live de: {tiktok_user}", flush=True)
 
     @client.on(CommentEvent)
     async def on_chat(e):
-        pic = getattr(e.user, 'avatar_thumb', {}).get('url_list', [""])[0] if hasattr(e.user, 'avatar_thumb') else ""
         await broadcast_para_sala(tiktok_user, "chat", {
             "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "comment": e.comment,
-            "profilePictureUrl": pic
+            "profilePictureUrl": get_avatar(e.user)
         })
 
     @client.on(GiftEvent)
     async def on_gift(e):
-        pic = getattr(e.user, 'avatar_thumb', {}).get('url_list', [""])[0] if hasattr(e.user, 'avatar_thumb') else ""
         g_name = getattr(e.gift, 'name', 'Gift')
         g_count = getattr(e.gift, 'count', getattr(e, 'repeat_count', 1))
         moedas = getattr(e.gift.info, 'diamond_count', 1) if hasattr(e.gift, 'info') else 1
         await broadcast_para_sala(tiktok_user, "gift", {
             "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "giftName": g_name,
-            "giftCount": g_count, "diamondCount": moedas, "profilePictureUrl": pic
+            "giftCount": g_count, "diamondCount": moedas, "profilePictureUrl": get_avatar(e.user)
         })
 
     @client.on(LikeEvent)
     async def on_like(e):
-        pic = getattr(e.user, 'avatar_thumb', {}).get('url_list', [""])[0] if hasattr(e.user, 'avatar_thumb') else ""
         await broadcast_para_sala(tiktok_user, "like", {
             "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "likeCount": e.count,
-            "profilePictureUrl": pic
+            "profilePictureUrl": get_avatar(e.user)
         })
 
     @client.on(JoinEvent)
     async def on_join(e):
-        pic = getattr(e.user, 'avatar_thumb', {}).get('url_list', [""])[0] if hasattr(e.user, 'avatar_thumb') else ""
         await broadcast_para_sala(tiktok_user, "join", {
-            "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''), "profilePictureUrl": pic
+            "nickname": e.user.nickname, "uniqueId": getattr(e.user, 'unique_id', ''),
+            "profilePictureUrl": get_avatar(e.user)
         })
 
     try:
         await client.start()
     except Exception as e:
-        print(f"⚠️ Erro ao conectar no TikTok de {tiktok_user}: {e}")
+        print(f"⚠️ Erro ao conectar no TikTok de {tiktok_user}: {e}", flush=True)
 
 
 async def websocket_handler(request):
-    """Gerencia a conexão do jogo (HTML) com o servidor na nuvem."""
     ws = web.WebSocketResponse()
     await ws.prepare(request)
 
@@ -103,7 +106,7 @@ async def websocket_handler(request):
                         salas_ativas[tiktok_user_atual]["tiktok_task"] = task
 
                     salas_ativas[tiktok_user_atual]["clientes_ws"].add(ws)
-                    print(f"🌐 Novo jogador entrou na sala: {tiktok_user_atual}")
+                    print(f"🌐 Novo jogador entrou na sala: {tiktok_user_atual}", flush=True)
 
     except Exception as e:
         pass
@@ -112,7 +115,7 @@ async def websocket_handler(request):
             salas_ativas[tiktok_user_atual]["clientes_ws"].discard(ws)
 
             if len(salas_ativas[tiktok_user_atual]["clientes_ws"]) == 0:
-                print(f"🧹 Sala {tiktok_user_atual} vazia. Desligando motor do TikTok para poupar RAM.")
+                print(f"🧹 Sala {tiktok_user_atual} vazia. Desligando motor.", flush=True)
                 client = salas_ativas[tiktok_user_atual]["client"]
                 if client:
                     try:
@@ -129,17 +132,14 @@ async def websocket_handler(request):
 
 
 async def health_check(request):
-    """Escudo: Responde sorrindo para o robô do Render!"""
     return web.Response(text="Torre de Controle 100% Operacional!", status=200)
 
 
 app = web.Application()
-# Tudo que vier na rota principal '/' vai para o WebSocket do Jogo
 app.router.add_get('/', websocket_handler)
-# Tudo que for verificação de saúde vai para o Escudo
 app.router.add_route('*', '/{tail:.*}', health_check)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
-    print(f"🚀 Torre de Controle AIOHTTP Iniciada na porta {port}...")
+    print(f"🚀 Torre de Controle Iniciada na porta {port}...", flush=True)
     web.run_app(app, host="0.0.0.0", port=port)
